@@ -1,0 +1,343 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Platform ────────────────────────────────────────────────────────────────
+
+model PlatformUser {
+  id              String   @id @default(cuid())
+  email           String   @unique
+  name            String?
+  isPlatformAdmin Boolean  @default(false)
+  createdAt       DateTime @default(now())
+
+  // Auth.js adapter relations
+  accounts Account[]
+  sessions Session[]
+
+  @@map("platform_users")
+}
+
+// Auth.js required models
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user PlatformUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user PlatformUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// ─── Business / Tenant ───────────────────────────────────────────────────────
+
+model Business {
+  id        String         @id @default(cuid())
+  name      String
+  subdomain String         @unique
+  timezone  String         @default("UTC")
+  status    BusinessStatus @default(trial)
+  createdAt DateTime       @default(now())
+
+  domains       BusinessDomain[]
+  memberships   BusinessMembership[]
+  customers     Customer[]
+  services      Service[]
+  staff         Staff[]
+  availRules    AvailabilityRule[]
+  availExceptions AvailabilityException[]
+  bookings      Booking[]
+  pages         Page[]
+  subscription  Subscription?
+  webhookEvents WebhookEvent[]
+  auditLogs     AuditLog[]
+
+  @@map("businesses")
+}
+
+enum BusinessStatus {
+  trial
+  active
+  suspended
+}
+
+model BusinessDomain {
+  id         String     @id @default(cuid())
+  businessId String
+  domain     String     @unique
+  type       DomainType
+  createdAt  DateTime   @default(now())
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@map("business_domains")
+}
+
+enum DomainType {
+  subdomain
+  custom
+}
+
+model BusinessMembership {
+  id         String     @id @default(cuid())
+  businessId String
+  userId     String
+  role       MemberRole
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@unique([businessId, userId])
+  @@map("business_memberships")
+}
+
+enum MemberRole {
+  owner
+  admin
+  staff
+}
+
+// ─── Customers ───────────────────────────────────────────────────────────────
+
+model Customer {
+  id         String  @id @default(cuid())
+  businessId String
+  userId     String?
+  email      String
+  phone      String?
+
+  business Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  bookings Booking[]
+
+  @@unique([businessId, email])
+  @@map("customers")
+}
+
+// ─── Services & Staff ────────────────────────────────────────────────────────
+
+model Service {
+  id          String  @id @default(cuid())
+  businessId  String
+  name        String
+  durationMin Int
+  pricePence  Int?
+  active      Boolean @default(true)
+
+  business     Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  bookingItems BookingItem[]
+
+  @@index([businessId, active])
+  @@map("services")
+}
+
+model Staff {
+  id         String  @id @default(cuid())
+  businessId String
+  name       String
+  userId     String?
+
+  business        Business                @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  availRules      AvailabilityRule[]
+  availExceptions AvailabilityException[]
+  bookings        Booking[]
+
+  @@map("staff")
+}
+
+// ─── Availability ─────────────────────────────────────────────────────────────
+
+model AvailabilityRule {
+  id         String @id @default(cuid())
+  businessId String
+  staffId    String?
+  dayOfWeek  Int    // 0=Sun … 6=Sat
+  startTime  String // "HH:MM"
+  endTime    String // "HH:MM"
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  staff    Staff?   @relation(fields: [staffId], references: [id], onDelete: SetNull)
+
+  @@map("availability_rules")
+}
+
+model AvailabilityException {
+  id         String        @id @default(cuid())
+  businessId String
+  staffId    String?
+  date       String        // "YYYY-MM-DD"
+  type       ExceptionType
+  startTime  String?
+  endTime    String?
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  staff    Staff?   @relation(fields: [staffId], references: [id], onDelete: SetNull)
+
+  @@map("availability_exceptions")
+}
+
+enum ExceptionType {
+  closed
+  open
+  customHours
+}
+
+// ─── Bookings ─────────────────────────────────────────────────────────────────
+
+model Booking {
+  id         String        @id @default(cuid())
+  businessId String
+  customerId String
+  staffId    String?
+  status     BookingStatus @default(pending)
+  startAtUtc DateTime
+  endAtUtc   DateTime
+  notes      String?
+  createdAt  DateTime      @default(now())
+
+  business Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  customer Customer      @relation(fields: [customerId], references: [id])
+  staff    Staff?        @relation(fields: [staffId], references: [id], onDelete: SetNull)
+  items    BookingItem[]
+
+  @@map("bookings")
+}
+
+enum BookingStatus {
+  pending
+  confirmed
+  cancelled
+  completed
+}
+
+model BookingItem {
+  id         String @id @default(cuid())
+  bookingId  String
+  serviceId  String
+  pricePence Int?
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  service Service @relation(fields: [serviceId], references: [id])
+
+  @@map("booking_items")
+}
+
+// ─── Pages / Block Builder ───────────────────────────────────────────────────
+
+model Page {
+  id                 String  @id @default(cuid())
+  businessId         String
+  slug               String
+  title              String
+  publishedVersionId String?
+
+  business Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  versions PageVersion[]
+
+  @@unique([businessId, slug])
+  @@map("pages")
+}
+
+model PageVersion {
+  id            String   @id @default(cuid())
+  pageId        String
+  versionNumber Int
+  blocksJson    Json
+  createdAt     DateTime @default(now())
+
+  page Page @relation(fields: [pageId], references: [id], onDelete: Cascade)
+
+  @@map("page_versions")
+}
+
+// ─── Billing ──────────────────────────────────────────────────────────────────
+
+model Subscription {
+  id                     String             @id @default(cuid())
+  businessId             String             @unique
+  provider               String             @default("stripe")
+  providerCustomerId     String
+  providerSubscriptionId String             @unique
+  status                 SubscriptionStatus
+  currentPeriodEnd       DateTime?
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@map("subscriptions")
+}
+
+enum SubscriptionStatus {
+  trialing
+  active
+  past_due
+  canceled
+  unpaid
+}
+
+model WebhookEvent {
+  id          String    @id @default(cuid())
+  provider    String
+  eventId     String
+  businessId  String?
+  payloadJson Json
+  processedAt DateTime?
+
+  business Business? @relation(fields: [businessId], references: [id], onDelete: SetNull)
+
+  @@unique([provider, eventId])
+  @@map("webhook_events")
+}
+
+// ─── Audit Log ────────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id           String   @id @default(cuid())
+  businessId   String?
+  actorUserId  String
+  action       String
+  targetType   String
+  targetId     String?
+  metaJson     Json     @default("{}")
+  createdAt    DateTime @default(now())
+
+  business Business? @relation(fields: [businessId], references: [id], onDelete: SetNull)
+
+  @@index([businessId, createdAt(sort: Desc)])
+  @@map("audit_logs")
+}
